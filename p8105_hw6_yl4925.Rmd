@@ -5,3 +5,229 @@ date: "12/3/2021"
 output: github_document
 ---
 
+```{r setup, include=FALSE}
+library(tidyverse)
+knitr::opts_chunk$set(
+  fig.width = 6,
+  fig.height = 8, 
+  fig.asp = 0.8,
+  dpi = 200,
+  out.width = "90%",
+  message = F,
+  echo = T,
+  warning = F)
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+options(ggplot2.continuous.colour = "viridis",
+        ggplot2.continuous.fill = "viridis")
+scale_colour_discrete = scale_color_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+```
+
+```{r}
+library(tidyverse)
+library(modelr)
+library(mgcv)
+```
+
+```{r}
+birthweight_df = read.csv("./data/birthweight.csv") %>% 
+  janitor::clean_names() 
+```
+
+```{r}
+birthweight_df %>% 
+  filter(is.na(rowSums(birthweight_df)))
+```
+There is no missing value.
+
+```{r}
+fct_birthweight_df = birthweight_df %>% 
+  mutate(babysex = case_when(
+    babysex == 1 ~ "male",
+    babysex == 2 ~ "female"
+  ), frace = case_when(
+    frace == 1 ~ "white",
+    frace == 2 ~ "black",
+    frace == 3 ~ "asian",
+    frace == 4 ~ "puerto_rican",
+    frace == 8 ~ "other",
+    frace == 9 ~ "unknown",
+  ), mrace = case_when(
+    mrace == 1 ~ "white",
+    mrace == 2 ~ "black",
+    mrace == 3 ~ "asian",
+    mrace == 4 ~ "puerto_rican",
+    mrace == 8 ~ "other"
+  )) %>% 
+  mutate(babysex = fct_infreq(babysex), 
+         frace = fct_infreq(frace),
+         mrace = fct_infreq(mrace))
+```
+
+```{r}
+original_fit = lm(bwt ~ babysex + bhead + blength + delwt + fincome + frace + gaweeks + 
+                    malform + menarche + mheight + momage + mrace + parity + pnumlbw + 
+                    pnumsga + ppbmi + ppwt + smoken + wtgain, data = fct_birthweight_df)
+```
+
+```{r}
+original_fit_df = original_fit %>% broom::tidy() 
+original_fit_df %>% 
+  filter(is.na(rowSums(select(original_fit_df, -term)))) %>% 
+  select(term) %>% 
+  knitr::kable()
+```
+We find there are three NA coefficients, which means that these three variables could be linear combination of other variables, so we do not choose these three variables as predictors.
+
+```{r}
+original_fit_df %>% 
+  filter(p.value > 0.05) %>% 
+  select(term, estimate, p.value) %>% 
+  knitr::kable()
+```
+The p values for these 13 variables are greater than 0.05, which means that we could not reject null hypothesis (coefficient is zero). But for mrace variable, some values of this variable are necessary (p value < 0.05). So we remain these two variables and only exclude frace (only the p value for "unknown" < 0.05), fincome, malform, menarche, mheight, momage, ppbmi and ppwt.
+
+```{r}
+better_fit = lm(bwt ~ babysex + bhead + blength + delwt + gaweeks + mrace + 
+                  parity + ppbmi + ppwt + smoken , data = fct_birthweight_df)
+```
+
+```{r}
+better_fit %>% 
+  broom::tidy()
+```
+
+```{r}
+fct_birthweight_df %>% 
+  modelr::add_residuals(better_fit) %>% 
+  modelr::add_predictions(better_fit) %>% 
+  ggplot(aes(x = pred, y = resid)) + 
+  geom_point(alpha = 0.5) + 
+  labs(
+    title = "lm_model residual VS prediction"
+  )
+```
+
+```{r}
+cv_df = 
+  crossv_mc(fct_birthweight_df, 100) 
+```
+
+```{r}
+cv_df =
+  cv_df %>% 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble))
+```
+
+```{r}
+cv_df = 
+  cv_df %>% 
+  mutate(
+    my_mod = map(train, ~lm(bwt ~ babysex + bhead + blength + delwt + gaweeks + mrace + 
+                  parity + ppbmi + ppwt + smoken , data = .x)),
+    len_ges_mod = map(train, ~lm(bwt ~ blength + gaweeks, data = .x)),
+    headcir_len_sex_mod = map(train, ~lm(bwt ~ bhead + blength + babysex + 
+                                           bhead * blength + bhead * babysex + blength * babysex + 
+                                           bhead * blength * babysex, data = .x))) %>% 
+  mutate(
+    rmse_my = map2_dbl(my_mod, test, ~rmse(model = .x, data = .y)),
+    rmse_len_ges = map2_dbl(len_ges_mod, test, ~rmse(model = .x, data = .y)),
+    rmse_headcir_len_sex = map2_dbl(headcir_len_sex_mod, test, ~rmse(model = .x, data = .y)))
+```
+
+```{r}
+cv_df %>% 
+  select(starts_with("rmse")) %>% 
+  pivot_longer(
+    everything(),
+    names_to = "model", 
+    values_to = "rmse",
+    names_prefix = "rmse_") %>% 
+  mutate(model = fct_inorder(model)) %>% 
+  ggplot(aes(x = model, y = rmse)) + geom_violin() +
+  labs(
+    title = "RMSE for three models"
+  )
+```
+
+## problem 2
+
+```{r}
+weather_df = 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2017-01-01",
+    date_max = "2017-12-31") %>%
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) %>%
+  select(name, id, everything())
+```
+
+```{r}
+log_result_df = weather_df %>% 
+  bootstrap(n = 5000) %>% 
+  mutate(
+    models = map(strap, ~lm(tmax ~ tmin, data = .x) ),
+    results = map(models, broom::tidy)) %>% 
+  select(-strap, -models) %>% 
+  unnest(results) %>% 
+  mutate(term = case_when(
+    term == "(Intercept)" ~ "beta0",
+    term == "tmin" ~ "beta1"
+  )) %>% 
+  select(.id, term, estimate) %>% 
+  pivot_wider(
+    names_from = term,
+    values_from = estimate
+  ) %>% 
+  mutate(log = log(beta0 * beta1))
+```
+
+```{r}
+log_result_df %>% 
+  ggplot(aes(x = log)) +
+  geom_density() +
+  labs(
+    x = "log(beta0 * beta1)",
+    title = "Distribution of Estimates of log(beta0 * beta1)")
+```
+```{r}
+log_result_df %>% 
+  summarize(
+    lower_limit = quantile(log, 0.025),
+    upper_limit = quantile(log, 0.975)) %>% 
+  knitr::kable()
+```
+
+```{r}
+r_square_result_df = weather_df %>% 
+  bootstrap(n = 5000) %>% 
+  mutate(
+    models = map(strap, ~lm(tmax ~ tmin, data = .x) ),
+    results = map(models, broom::glance)) %>% 
+  select(-strap, -models) %>% 
+  unnest(results) %>% 
+  select(.id, r.squared)
+```
+
+```{r}
+r_square_result_df %>% 
+  ggplot(aes(x = r.squared)) +
+  geom_density() +
+  labs(
+    x = "r_squared",
+    title = "Distribution of Estimates of r_squared")
+```
+```{r}
+r_square_result_df %>% 
+  summarize(
+    lower_limit = quantile(r.squared, 0.025),
+    upper_limit = quantile(r.squared, 0.975)) %>% 
+  knitr::kable()
+```
+
