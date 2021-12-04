@@ -200,7 +200,9 @@ log_result_df %>%
 log_result_df %>% 
   summarize(
     lower_limit = quantile(log, 0.025),
-    upper_limit = quantile(log, 0.975)) %>% 
+    upper_limit = quantile(log, 0.975),
+    log_mean = mean(log),
+    log_se = sd(log)) %>% 
   knitr::kable()
 ```
 
@@ -227,7 +229,9 @@ r_square_result_df %>%
 r_square_result_df %>% 
   summarize(
     lower_limit = quantile(r.squared, 0.025),
-    upper_limit = quantile(r.squared, 0.975)) %>% 
+    upper_limit = quantile(r.squared, 0.975),
+    r_square_mean = mean(r.squared),
+    r_square_se = sd(r.squared)) %>% 
   knitr::kable()
 ```
 
