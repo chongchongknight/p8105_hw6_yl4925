@@ -28,18 +28,18 @@ library(tidyverse)
 library(modelr)
 library(mgcv)
 ```
-
+## Problem1
 ```{r}
 birthweight_df = read.csv("./data/birthweight.csv") %>% 
   janitor::clean_names() 
 ```
 
 ```{r}
-birthweight_df %>% 
-  filter(is.na(rowSums(birthweight_df)))
+sum(is.na(rowSums(birthweight_df)))
 ```
 There is no missing value.
 
+Then we try to propose a linear regression model for the data. First, we factor some variables
 ```{r}
 fct_birthweight_df = birthweight_df %>% 
   mutate(babysex = case_when(
@@ -52,6 +52,9 @@ fct_birthweight_df = birthweight_df %>%
     frace == 4 ~ "puerto_rican",
     frace == 8 ~ "other",
     frace == 9 ~ "unknown",
+  ), malform = case_when(
+    malform == 0 ~ "absent",
+    malform == 1 ~ "present"
   ), mrace = case_when(
     mrace == 1 ~ "white",
     mrace == 2 ~ "black",
@@ -61,13 +64,13 @@ fct_birthweight_df = birthweight_df %>%
   )) %>% 
   mutate(babysex = fct_infreq(babysex), 
          frace = fct_infreq(frace),
-         mrace = fct_infreq(mrace))
+         mrace = fct_infreq(mrace),
+         malform = fct_infreq(malform))
 ```
 
+Then we use lm to regress all variables. And we try to exclude some variables from our model.
 ```{r}
-original_fit = lm(bwt ~ babysex + bhead + blength + delwt + fincome + frace + gaweeks + 
-                    malform + menarche + mheight + momage + mrace + parity + pnumlbw + 
-                    pnumsga + ppbmi + ppwt + smoken + wtgain, data = fct_birthweight_df)
+original_fit = lm(bwt ~ ., data = fct_birthweight_df)
 ```
 
 ```{r}
@@ -77,7 +80,7 @@ original_fit_df %>%
   select(term) %>% 
   knitr::kable()
 ```
-We find there are three NA coefficients, which means that these three variables could be linear combination of other variables, so we do not choose these three variables as predictors.
+We find there are three NA coefficients (pnumlbw, pnumsga and wtgain), which means that these three variables could be linear combination of other variables, so we do not choose these three variables as predictors.
 
 ```{r}
 original_fit_df %>% 
@@ -85,11 +88,13 @@ original_fit_df %>%
   select(term, estimate, p.value) %>% 
   knitr::kable()
 ```
-The p values for these 13 variables are greater than 0.05, which means that we could not reject null hypothesis (coefficient is zero). But for mrace variable, some values of this variable are necessary (p value < 0.05). So we remain these two variables and only exclude frace (only the p value for "unknown" < 0.05), fincome, malform, menarche, mheight, momage, ppbmi and ppwt.
+The p values for these 13 variables are greater than 0.05, which means that we could not reject null hypothesis (coefficient is zero). But for mrace variable, some values of this variable are necessary (p value < 0.05). So we remain mrace variables and only exclude frace (only the p value for "unknown" < 0.05), fincome, malform (only the p value for "absent" < 0.05), menarche, mheight, momage, ppbmi and ppwt.
 
+Then we get a better model.
 ```{r}
 better_fit = lm(bwt ~ babysex + bhead + blength + delwt + gaweeks + mrace + 
                   parity + ppbmi + ppwt + smoken , data = fct_birthweight_df)
+summary(better_fit)
 ```
 
 ```{r}
@@ -103,14 +108,17 @@ fct_birthweight_df %>%
   modelr::add_predictions(better_fit) %>% 
   ggplot(aes(x = pred, y = resid)) + 
   geom_point(alpha = 0.5) + 
+  geom_smooth(color = "blue", method = "lm", se = FALSE) + 
   labs(
     title = "lm_model residual VS prediction"
   )
 ```
+We find the slope of smooth line for residual VS predictor is almost 0, which means that these points are symmetric about the predictor-axis. The reason for this might be that when we use linear regression, we set a normal distribution residual ($\epsilon$ ~ N (0, $\sigma^2$)).
 
+
+Then we compare our model to the main effect model and interaction model.
 ```{r}
-cv_df = 
-  crossv_mc(fct_birthweight_df, 100) 
+cv_df = crossv_mc(fct_birthweight_df, 100) 
 ```
 
 ```{r}
@@ -128,13 +136,13 @@ cv_df =
     my_mod = map(train, ~lm(bwt ~ babysex + bhead + blength + delwt + gaweeks + mrace + 
                   parity + ppbmi + ppwt + smoken , data = .x)),
     len_ges_mod = map(train, ~lm(bwt ~ blength + gaweeks, data = .x)),
-    headcir_len_sex_mod = map(train, ~lm(bwt ~ bhead + blength + babysex + 
-                                           bhead * blength + bhead * babysex + blength * babysex + 
-                                           bhead * blength * babysex, data = .x))) %>% 
+    headcir_len_sex_mod = map(train, ~lm(bwt ~ blength + bhead + babysex + 
+                                           blength * bhead + blength * babysex + bhead * babysex + 
+                                           blength*bhead*babysex, data = .x))) %>% 
   mutate(
     rmse_my = map2_dbl(my_mod, test, ~rmse(model = .x, data = .y)),
-    rmse_len_ges = map2_dbl(len_ges_mod, test, ~rmse(model = .x, data = .y)),
-    rmse_headcir_len_sex = map2_dbl(headcir_len_sex_mod, test, ~rmse(model = .x, data = .y)))
+    rmse_main_effect = map2_dbl(len_ges_mod, test, ~rmse(model = .x, data = .y)),
+    rmse_interaction = map2_dbl(headcir_len_sex_mod, test, ~rmse(model = .x, data = .y)))
 ```
 
 ```{r}
@@ -145,13 +153,15 @@ cv_df %>%
     names_to = "model", 
     values_to = "rmse",
     names_prefix = "rmse_") %>% 
-  mutate(model = fct_inorder(model)) %>% 
+  mutate(model = fct_reorder(model, rmse)) %>% 
   ggplot(aes(x = model, y = rmse)) + geom_violin() +
   labs(
     title = "RMSE for three models"
   )
 ```
 
+We find the root mean square error for my model is the smallest, and interaction model has a middle root mean square error, and 
+the main effect model has largest root mean square error.
 ## problem 2
 
 ```{r}
@@ -168,6 +178,7 @@ weather_df =
   select(name, id, everything())
 ```
 
+Use broom tidy to get estimate for intercept and slope.
 ```{r}
 log_result_df = weather_df %>% 
   bootstrap(n = 5000) %>% 
@@ -188,6 +199,7 @@ log_result_df = weather_df %>%
   mutate(log = log(beta0 * beta1))
 ```
 
+Show the distribution.
 ```{r}
 log_result_df %>% 
   ggplot(aes(x = log)) +
@@ -196,16 +208,26 @@ log_result_df %>%
     x = "log(beta0 * beta1)",
     title = "Distribution of Estimates of log(beta0 * beta1)")
 ```
+Distribution is close to normal distribution.
+
+Show mean, 95% CI, and sd for $log(\beta_1 *\beta_2)$
 ```{r}
-log_result_df %>% 
+log_numerical_result = log_result_df %>% 
   summarize(
     lower_limit = quantile(log, 0.025),
     upper_limit = quantile(log, 0.975),
     log_mean = mean(log),
-    log_se = sd(log)) %>% 
+    log_sd = sd(log)) 
+log_numerical_result %>% 
   knitr::kable()
+log_mean = log_numerical_result$log_mean
+log_sd = log_numerical_result$log_sd
+log_lower = log_numerical_result$lower_limit
+log_upper = log_numerical_result$upper_limit
 ```
+The mean for $log(\beta_1 *\beta_2)$ is `r log_mean`, the sd for $log(\beta_1 *\beta_2)$ is `r log_sd`, 95% CI for $log(\beta_1 *\beta_2)$ is [`r log_lower`, `r log_upper`].
 
+Show mean, 95% CI, and sd for $r^2$
 ```{r}
 r_square_result_df = weather_df %>% 
   bootstrap(n = 5000) %>% 
@@ -225,13 +247,21 @@ r_square_result_df %>%
     x = "r_squared",
     title = "Distribution of Estimates of r_squared")
 ```
+
+Distribution is close to normal distribution.
+
 ```{r}
-r_square_result_df %>% 
+r2_numerical_result = r_square_result_df %>% 
   summarize(
     lower_limit = quantile(r.squared, 0.025),
     upper_limit = quantile(r.squared, 0.975),
     r_square_mean = mean(r.squared),
-    r_square_se = sd(r.squared)) %>% 
+    r_square_sd = sd(r.squared)) 
+r2_numerical_result %>% 
   knitr::kable()
+r2_mean = r2_numerical_result$r_square_mean
+r2_sd = r2_numerical_result$r_square_sd
+r2_lower = r2_numerical_result$lower_limit
+r2_upper = r2_numerical_result$upper_limit
 ```
-
+The mean for $r^2$ is `r r2_mean`, the sd for $r^2$ is `r r2_sd`, 95% CI for $r^2$ is [`r r2_lower`, `r r2_upper`].
